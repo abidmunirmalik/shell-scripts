@@ -1,9 +1,10 @@
 #!/bin/bash
-# Program: archiver
-# Author: Abid Malik
-# Purpose: Archive eol sections
-# Requirements: Must run on the primary to avoid client connection timeouts
-# Last Modified: AM - June 05, 2021
+<<ARCHIVER
+Program: archiver
+Author: Sam Evett, Josh Huber, Abid Malik
+Purpose: Archive eol sections
+Requirements: Must run on the WA1 primary to avoid client connection timeouts
+ARCHIVER
 
 # GLOBAL VARIABLES
 ARCHIVE_PATH=/mnt/shares/dba/archiving
@@ -21,6 +22,11 @@ function initialize() {
   echo " "
   echo "To stop archiving cleanly:"
   echo "touch /tmp/clean_exit"
+  echo " "
+  echo "To tune the performance, you can dynamically adjust the adjust the throttle factor,"
+  echo "a delay (in seconds) between each deployment during a section archival:"
+  echo "(Lower values will consume more resources and possibly cause replication lag.)"
+  echo "echo 4 > $THROTTLE_FILE"
   echo " "
   echo "[`date`] Archiving started."
   # Check the throttle file
@@ -56,7 +62,7 @@ function clean_exit() {
     rm -f $1
     echo "[`date`] Clean exit requested, exiting."
     echo "[`date`] Archival process stopped on manual request."
-    rm -f $STATUS_FILE $THROTTLE_FILE
+    rm -f $STATUS_FILE
     exit
   fi
 } # End clean_exit function
@@ -80,6 +86,7 @@ function check_slave_lag() {
 function check_chained_slave_lag() {
   SLAVE_STRING="DWI"
   DWI_SLAVE_MASTER=$(mysql --defaults-file=$MYSQL_CNF -BNe "show slave hosts" | awk '{ print $2 }' | grep -i "$SLAVE_STRING")
+  if [ -n "$DWI_SLAVE_MASTER" ] ; then return ; fi
   DWI_SLAVE_LIST=$(mysql --defaults-file=$MYSQL_CNF -h $DWI_SLAVE_MASTER -BNe "show slave hosts" | awk '{ print $2 }')
   for SLAVE in $DWI_SLAVE_LIST; do
     SLAVE_LAG=$(mysql --defaults-file=$MYSQL_CNF -h $SLAVE -e "show slave status \G" | grep Seconds_Behind | awk '{print $2}')
@@ -147,6 +154,7 @@ function section_processing() {
     TAR_NAME=$(date +'arch-%Y%m%d-%H%M%S')
     tar --remove-files -cf $TAR_NAME.tar *.xz
     # Move *.tar files to archived_sections folder
+    [ -d $ARCHIVE_PATH/archived_sections ] || mkdir $ARCHIVE_PATH/archived_sections
     sleep 1
     mv *.tar $ARCHIVE_PATH/archived_sections/
     # Get the next sections's batch
@@ -160,7 +168,7 @@ function section_processing() {
     echo "touch /tmp/clean_exit"
     echo " "
   done #end while loop
-  rm -f $STATUS_FILE $THROTTLE_FILE
+  rm -f $STATUS_FILE
   echo "[`date`] All caught up. Archival process completed!"
 } # End section_processing function
 
