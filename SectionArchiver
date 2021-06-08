@@ -1,7 +1,7 @@
 #!/bin/bash
 <<ARCHIVER
 Program: archiver
-Author: Sam Evett, Josh Huber, Abid Malik
+Author: Abid Malik
 Purpose: Archive eol sections
 Requirements: Must run on the WA1 primary to avoid client connection timeouts
 ARCHIVER
