@@ -1,0 +1,13 @@
+id,name,password,shell
+---------------------------
+10,Abid Malik,Passw0rd, Bash
+20,Cody Wilson,Gormet, csh
+35,Joosh Plumber,Goat123, bash
+30,Josh Huber,Passw0rd123, zsh
+55,Jeena Doe,Peak123, bash
+35,Jash Plumber,Goat40, bash
+40,Jeen Puber,Passw, csh
+55,Doe,Peak123,bash
+56	jan	pass	zsh
+56	jani	pass	zsh
+56	janii	pass	zsh

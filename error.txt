@@ -1,0 +1,8 @@
+./redirect_operators_stdin_stdout_stderr.sh: line 6: java: command not found
+this is second line
+this is thrid line
+forth line
+and fifth line
+that is end off iof the file
+aand be nice
+ABID MALIK

@@ -1,0 +1,6 @@
+The logged in user is: amalik
+The hostname is: vamalikpoc01.webassign.net
+The current working directory is: /home/amalik/nethome/scratch/scripts
+Current logged in users are:  09:14:02 up 146 days,  2:23,  1 user,  load average: 0.02, 0.07, 0.12
+USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT
+amalik   pts/0    vwireguardinfra0 08:04    2.00s  0.51s  0.00s bash ./heredoc.sh

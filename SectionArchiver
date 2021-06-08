@@ -1,0 +1,175 @@
+#!/bin/bash
+# Program: archiver
+# Author: Abid Malik
+# Purpose: Archive eol sections
+# Requirements: Must run on the primary to avoid client connection timeouts
+# Last Modified: AM - June 05, 2021
+
+# GLOBAL VARIABLES
+ARCHIVE_PATH=/mnt/shares/dba/archiving
+BATCH_SIZE=20
+SLAVE_LAG_LIMIT=600
+MYSQL_CNF="$ARCHIVE_PATH/archiving.cnf"
+STATUS_FILE="$ARCHIVE_PATH/archiving_is_running"
+THROTTLE_FILE="$ARCHIVE_PATH/slave_lag_throttle.txt"
+
+
+function initialize() {
+  echo " "
+  echo "To pause archiving:"
+  echo "touch /tmp/wedge"
+  echo " "
+  echo "To stop archiving cleanly:"
+  echo "touch /tmp/clean_exit"
+  echo " "
+  echo "[`date`] Archiving started."
+  # Check the throttle file
+  # Set the slave throttle and archiving target
+  if [ ! -f "$THROTTLE_FILE" ] ; then
+    echo 4 > $THROTTLE_FILE
+  fi
+  # See if the status file exists.  If it does, do not run.
+  if [ -f "$STATUS_FILE" ] ; then
+    echo "[`date`] Error: Previous run did not complete.  Aborting."
+    exit 1
+  fi
+  touch $STATUS_FILE
+} # End initialize function
+
+
+# Allows the script to be suspended manually
+function wedge() {
+  # Example usage:  wedge /tmp/wedge 60
+  #                (to wedge indefinitely if /tmp/wedge is found, checking every 60 sec.)
+  if [ -f "$1" ] ; then
+    echo "[`date`]  Wedge present at $1. Checking every $2 seconds. Do 'rm $1' to resume archiving."
+    while [ -f "$1" ] ; do sleep $2 ; done
+    echo "[`date`]  Wedge $1 has been removed. Resuming archiving operation."
+  fi
+} # End wedge function
+
+
+# Allows the script to be exited cleanly
+function clean_exit() {
+  # Example usage:  clean_exit /tmp/clean_exit
+  if [ -f "$1" ] ; then
+    rm -f $1
+    echo "[`date`] Clean exit requested, exiting."
+    echo "[`date`] Archival process stopped on manual request."
+    rm -f $STATUS_FILE $THROTTLE_FILE
+    exit
+  fi
+} # End clean_exit function
+
+
+# Check slave lag, identifies connected slaves, waits for any slave exceeding the lag limit
+function check_slave_lag() {
+  SLAVE_LIST=$(mysql --defaults-file=$MYSQL_CNF -BNe "show slave hosts" | awk '{ print $2 }')
+  for SLAVE in $SLAVE_LIST; do
+    SLAVE_LAG=$(mysql --defaults-file=$MYSQL_CNF -h $SLAVE -e "show slave status \G" | grep Seconds_Behind | awk '{print $2}')
+    # Wait for slaves to catch up, check every minute
+    while [[ $SLAVE_LAG -gt $SLAVE_LAG_LIMIT ]] ; do
+      echo "[`date`]  $SLAVE is behind by $SLAVE_LAG seconds."
+      sleep 60
+      SLAVE_LAG=$(mysql --defaults-file=$MYSQL_CNF -h $SLAVE -e "show slave status \G" | grep Seconds_Behind | awk '{print $2}')
+    done
+  done
+}  # end check_slave_lag function
+
+# Identifies connected DWI slaves, waits for any chained-slave exceeding the lag limit
+function check_chained_slave_lag() {
+  SLAVE_STRING="DWI"
+  DWI_SLAVE_MASTER=$(mysql --defaults-file=$MYSQL_CNF -BNe "show slave hosts" | awk '{ print $2 }' | grep -i "$SLAVE_STRING")
+  DWI_SLAVE_LIST=$(mysql --defaults-file=$MYSQL_CNF -h $DWI_SLAVE_MASTER -BNe "show slave hosts" | awk '{ print $2 }')
+  for SLAVE in $DWI_SLAVE_LIST; do
+    SLAVE_LAG=$(mysql --defaults-file=$MYSQL_CNF -h $SLAVE -e "show slave status \G" | grep Seconds_Behind | awk '{print $2}')
+  # Wait for slaves to catch up, check every minute
+    while [[ $SLAVE_LAG -gt $SLAVE_LAG_LIMIT ]] ; do
+      echo "[`date`]  $SLAVE is behind by $SLAVE_LAG seconds."
+      sleep 60
+      SLAVE_LAG=$(mysql --defaults-file=$MYSQL_CNF -h $SLAVE -e "show slave status \G" | grep Seconds_Behind | awk '{print $2}')
+    done
+  done
+}  # end check_chained_slave_lag function
+
+
+# Check staging tables for existing rows
+# If the staging tables are not empty, it may indicate that a prior run failed.  Abort the script, just in case.
+function check_staging_tables() {
+  STAGING_TABLES="stg_loginfo stg_longresponses stg_notes stg_responses stg_smw_responses stg_smw_scores"
+  for STAGING_TAB in $STAGING_TABLES; do
+    ROW_COUNT=$(mysql --defaults-file=$MYSQL_CNF archiving -BNe "select count(*) from $STAGING_TAB")
+    if [[ $ROW_COUNT -ne 0 ]] ; then
+      echo "[`date`]  $STAGING_TAB is not empty, may indicate prior run failed, aborting"
+      exit
+    fi
+  done
+}  # end check_staging_tables function
+
+function section_processing() {
+  # Identify and add candidate sections to the eol table
+  mysql --defaults-file=$MYSQL_CNF archiving -e "call archive_section_selection"
+  # Initialize the first batch of sections
+  SECTION_LIST=$(mysql --defaults-file=$MYSQL_CNF -BNe "select section from v4net.eol where deleted is null limit $BATCH_SIZE")
+
+  # Batch loop (if the section list is not empty)
+  while [[ -n "$SECTION_LIST" ]] ; do
+    # Section loop
+    for SECTION in $SECTION_LIST; do
+      echo "[`date`]  $SECTION"
+      # Copy the section to staging tables, delete from v4netrot or v4net
+      THROTTLE=$(cat $THROTTLE_FILE)
+      mysql --defaults-file=$MYSQL_CNF archiving -BNe "set session binlog_format = 'STATEMENT';
+        call archive_section_delete($SECTION,$THROTTLE)"
+      # Dump the staging tables to a .sql file
+      mysqldump --defaults-file=$MYSQL_CNF archiving --ignore-table=archiving.section_batch_history --no-create-info    --skip-opt --skip-triggers | xz > $ARCHIVE_PATH/$SECTION.sql.xz
+      # Clear the staging tables for the next section
+      mysql --defaults-file=$MYSQL_CNF archiving -e "set session binlog_format = 'STATEMENT';
+        delete from stg_loginfo;
+        delete from stg_longresponses;
+        delete from stg_notes;
+        delete from stg_responses;
+        delete from stg_smw_responses;
+        delete from stg_smw_scores;"
+      # Check for clean exit request
+      clean_exit /tmp/clean_exit
+      # Check for wedge after processing this section
+      wedge /tmp/wedge 60
+      # Check for slave lag after processing this section
+      check_slave_lag
+      check_chained_slave_lag
+    done #end for loop
+
+    # tar the batch of 20 sections ($THROTTLE=20)
+    # added a sleep 1 to ensure unique tar name
+    cd $ARCHIVE_PATH
+    sleep 1
+    TAR_NAME=$(date +'arch-%Y%m%d-%H%M%S')
+    tar --remove-files -cf $TAR_NAME.tar *.xz
+    # Move *.tar files to archived_sections folder
+    sleep 1
+    mv *.tar $ARCHIVE_PATH/archived_sections/
+    # Get the next sections's batch
+    SECTION_LIST=$(mysql --defaults-file=$MYSQL_CNF -BNe "select section from v4net.eol where deleted is null limit $BATCH_SIZE")
+    # Reminder
+    echo " "
+    echo "To pause archiving:"
+    echo "touch /tmp/wedge"
+    echo " "
+    echo "To stop archiving cleanly:"
+    echo "touch /tmp/clean_exit"
+    echo " "
+  done #end while loop
+  rm -f $STATUS_FILE $THROTTLE_FILE
+  echo "[`date`] All caught up. Archival process completed!"
+} # End section_processing function
+
+# Main starting point
+# exit on error
+set -e
+# Initialize throttling & start archiving process
+initialize
+# Check for rows in staging tables, may indicate prior run failed.  Abort if rows found
+check_staging_tables
+# Perform the actual sections processing
+section_processing

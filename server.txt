@@ -1,0 +1,6 @@
+The prod server ip is 172.32.5.0
+the staging is oracle
+mysql ip address is 3.5.34.0
+255.255.255.0
+
+2345.23.4.5

@@ -1,0 +1,1 @@
+./redirect_operators_stdin_stdout_stderr.sh: line 12: java: command not found
